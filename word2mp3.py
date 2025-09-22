@@ -32,13 +32,17 @@ def text_to_mp3(text: str, output_path: Optional[str] = None,
     """
     tts = gTTS(text, lang=language.value)
     
+    # Create safe filename by replacing problematic characters
+    safe_text = "".join(c for c in text if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    safe_text = safe_text.replace(' ', '_')
+    
     # Handle output path
     if output_path:
         # Ensure output directory exists
         os.makedirs(output_path, exist_ok=True)
-        filename = os.path.join(output_path, f"{text}.mp3")
+        filename = os.path.join(output_path, f"{safe_text}.mp3")
     else:
-        filename = f"{text}.mp3"
+        filename = f"{safe_text}.mp3"
     
     tts.save(filename)
     return filename
@@ -50,7 +54,8 @@ def run_repl():
     print("Enter text to convert, type 'quit()' or 'exit()' to leave")
     print("Supported languages: en (English), zh-tw (Traditional Chinese), zh-cn (Simplified Chinese), ja (Japanese), ko (Korean)")
     print("Format: <text> [language_code] [output_directory]")
-    print("Example: hello en /tmp/output")
+    print("Example: hello world en /tmp/output")
+    print("Note: Use quotes for text with spaces if you need to specify language/output")
     print("-" * 50)
     
     while True:
@@ -64,23 +69,51 @@ def run_repl():
             if not user_input:
                 continue
                 
-            # Parse input
+            # Parse input - improved parsing logic
             parts = user_input.split()
-            text = parts[0]
-            
-            # Set language
+            text = None
             lang = Language.ENGLISH
-            if len(parts) > 1:
-                try:
-                    lang_code = parts[1]
-                    lang = next(l for l in Language if l.value == lang_code)
-                except (StopIteration, IndexError):
-                    print(f"Warning: Unsupported language code '{parts[1]}', using English")
-            
-            # Set output directory
             output = None
-            if len(parts) > 2:
-                output = parts[2]
+            
+            # Check if input starts with quotes (for text with spaces)
+            if user_input.startswith('"') and '"' in user_input[1:]:
+                # Handle quoted text
+                quote_end = user_input.index('"', 1)
+                text = user_input[1:quote_end]
+                remaining = user_input[quote_end+1:].strip().split()
+                
+                # Parse language and output from remaining parts
+                if len(remaining) > 0:
+                    try:
+                        lang = next(l for l in Language if l.value == remaining[0])
+                    except StopIteration:
+                        print(f"Warning: Unsupported language code '{remaining[0]}', using English")
+                
+                if len(remaining) > 1:
+                    output = remaining[1]
+                    
+            else:
+                # Check if last parts are language codes or paths
+                valid_langs = [l.value for l in Language]
+                
+                # Default: treat entire input as text
+                text = user_input
+                
+                # But check if last 1 or 2 parts could be lang/output
+                if len(parts) >= 2:
+                    # Check if last part could be output directory and second-to-last is language
+                    if len(parts) >= 3 and parts[-2] in valid_langs:
+                        lang = next(l for l in Language if l.value == parts[-2])
+                        output = parts[-1]
+                        text = " ".join(parts[:-2])
+                    # Check if last part is language code
+                    elif parts[-1] in valid_langs:
+                        lang = next(l for l in Language if l.value == parts[-1])
+                        text = " ".join(parts[:-1])
+            
+            if not text:
+                print("Error: No text provided")
+                continue
             
             # Convert
             filename = text_to_mp3(text, output, lang)
