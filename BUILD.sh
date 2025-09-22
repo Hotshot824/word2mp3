@@ -3,82 +3,132 @@
 # Build script for word2mp3 - Compile Python script to executable binary
 
 # Set a virtual environment.
-VENV_DIR=".venv_word2mp3"  # Keep for compatibility but won't be used
+VENV_DIR=".venv_word2mp3"
 BUILD_DIR="build"
 DIST_DIR="dist"
 OUTPUT_NAME="word2mp3"
+USE_VENV=0
 
 echo "Starting build process for word2mp3"
 echo ""
 
 echo "[Step 1/5] Checking system requirements..."
 
-# Check for system Python with shared library support first
-if /usr/bin/python3 -c "import sysconfig; exit(0 if sysconfig.get_config_var('Py_ENABLE_SHARED') else 1)" 2>/dev/null; then
-    PYTHON_CMD="/usr/bin/python3"
-    echo "[Info] Using system Python: $(/usr/bin/python3 --version) (with shared library support)"
-elif command -v python3 &> /dev/null; then
-    # Check if the default python3 has shared library support
-    if python3 -c "import sysconfig; exit(0 if sysconfig.get_config_var('Py_ENABLE_SHARED') else 1)" 2>/dev/null; then
-        PYTHON_CMD="python3"
-        echo "[Info] Detected: $(python3 --version) (with shared library support)"
+# Check if Python is available and prefer ones with shared library support
+PYTHON_CMD=""
+PYTHON_FOUND=0
+
+# Function to check if Python has shared library support
+check_shared_lib() {
+    local py_cmd="$1"
+    if $py_cmd -c "import sysconfig; exit(0 if sysconfig.get_config_var('Py_ENABLE_SHARED') else 1)" 2>/dev/null; then
+        return 0
     else
-        echo "[Warning] Default python3 doesn't have shared library support, trying system python..."
-        if /usr/bin/python3 -c "import sysconfig; exit(0 if sysconfig.get_config_var('Py_ENABLE_SHARED') else 1)" 2>/dev/null; then
-            PYTHON_CMD="/usr/bin/python3"
-            echo "[Info] Using system Python: $(/usr/bin/python3 --version) (with shared library support)"
-        else
-            echo "[Error] No Python with shared library support found."
-            echo "PyInstaller requires Python built with --enable-shared"
-            exit 1
+        return 1
+    fi
+}
+
+# Try different Python commands in order of preference
+for py_candidate in python3 python /usr/bin/python3; do
+    if command -v "$py_candidate" &> /dev/null; then
+        PYTHON_VERSION=$($py_candidate --version 2>&1)
+        if [[ $PYTHON_VERSION == *"Python 3"* ]]; then
+            if check_shared_lib "$py_candidate"; then
+                PYTHON_CMD="$py_candidate"
+                echo "[Info] Using: $PYTHON_VERSION (with shared library support)"
+                PYTHON_FOUND=1
+                break
+            else
+                echo "[Warning] Found $PYTHON_VERSION but without shared library support"
+            fi
         fi
     fi
-elif command -v python &> /dev/null; then
-    PYTHON_VERSION=$(python --version 2>&1)
-    if [[ $PYTHON_VERSION == *"Python 3"* ]]; then
-        if python -c "import sysconfig; exit(0 if sysconfig.get_config_var('Py_ENABLE_SHARED') else 1)" 2>/dev/null; then
-            PYTHON_CMD="python"
-            echo "[Info] Detected: $PYTHON_VERSION (with shared library support)"
-        else
-            echo "[Error] Python found but doesn't have shared library support."
-            exit 1
+done
+
+# If no Python with shared lib found, use any available Python 3 and warn
+if [ $PYTHON_FOUND -eq 0 ]; then
+    for py_candidate in python3 python; do
+        if command -v "$py_candidate" &> /dev/null; then
+            PYTHON_VERSION=$($py_candidate --version 2>&1)
+            if [[ $PYTHON_VERSION == *"Python 3"* ]]; then
+                PYTHON_CMD="$py_candidate"
+                echo "[Warning] Using: $PYTHON_VERSION (without shared library support)"
+                echo "[Warning] PyInstaller might fail. Consider using Python built with --enable-shared"
+                PYTHON_FOUND=1
+                break
+            fi
         fi
-    else
-        echo "[Error] Python 3 is required, but found: $PYTHON_VERSION"
-        exit 1
-    fi
-else
+    done
+fi
+
+if [ $PYTHON_FOUND -eq 0 ]; then
     echo "[Error] Python 3 not found in PATH."
     echo "Please install Python 3.6 or later and ensure it is accessible."
+    echo ""
+    echo "Installation instructions:"
+    echo "  - Windows: Download from https://python.org"
+    echo "  - macOS:   brew install python3"
+    echo "  - Linux:   sudo apt install python3 python3-venv"
     exit 1
 fi
 
 echo ""
-echo "[Step 2/5] Checking Python packages..."
+echo "[Step 2/5] Setting up virtual environment..."
 
-# Check if required packages are available, install to user directory if needed
-echo "[Info] Installing/updating required packages..."
-$PYTHON_CMD -m pip install --user --upgrade gTTS click pyinstaller --quiet --break-system-packages 2>/dev/null || \
-$PYTHON_CMD -m pip install --user --upgrade gTTS click pyinstaller --quiet 2>/dev/null || \
-echo "[Warning] Could not install packages via pip, trying system packages..."
+# Detect OS and set appropriate paths
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+    # Windows environment
+    VENV_BIN_DIR="$VENV_DIR/Scripts"
+    VENV_PIP="$VENV_DIR/Scripts/pip"
+    VENV_PYINSTALLER="$VENV_DIR/Scripts/pyinstaller"
+    VENV_PYTHON="$VENV_DIR/Scripts/python"
+else
+    # Unix-like environment (Linux, macOS)
+    VENV_BIN_DIR="$VENV_DIR/bin"
+    VENV_PIP="$VENV_DIR/bin/pip"
+    VENV_PYINSTALLER="$VENV_DIR/bin/pyinstaller"
+    VENV_PYTHON="$VENV_DIR/bin/python"
+fi
 
-echo "[Info] Dependencies ready."
-
-# Set paths for user-installed packages  
-PYINSTALLER_CMD="$PYTHON_CMD -m PyInstaller"
+# Try to create virtual environment, fallback to user install if it fails
+if $PYTHON_CMD -m venv $VENV_DIR 2>/dev/null; then
+    echo "[Info] Created virtual environment successfully"
+    $VENV_PIP install --upgrade pip --quiet 2>/dev/null
+    USE_VENV=1
+else
+    echo "[Warning] Could not create virtual environment, will install packages to user directory"
+    USE_VENV=0
+fi
 
 echo ""
 echo "[Step 3/5] Installing dependencies..."
-$VENV_PIP install --quiet --upgrade gTTS click pyinstaller
-echo "[Info] Dependencies installed."
+
+if [ $USE_VENV -eq 1 ]; then
+    echo "[Info] Installing packages in virtual environment..."
+    $VENV_PIP install --upgrade gTTS click pyinstaller --quiet
+    PYINSTALLER_CMD="$VENV_PYINSTALLER"
+    echo "[Info] Using virtual environment packages"
+else
+    echo "[Info] Installing packages to user directory..."
+    # Try different pip install methods
+    if $PYTHON_CMD -m pip install --user --upgrade gTTS click pyinstaller --quiet 2>/dev/null; then
+        echo "[Info] Packages installed successfully"
+    elif $PYTHON_CMD -m pip install --user --upgrade gTTS click pyinstaller --quiet --break-system-packages 2>/dev/null; then
+        echo "[Info] Packages installed successfully (with --break-system-packages)"
+    else
+        echo "[Warning] Could not install via pip, trying to continue..."
+    fi
+    PYINSTALLER_CMD="$PYTHON_CMD -m PyInstaller"
+fi
+echo "[Info] Dependencies ready."
 
 echo ""
-echo "[Step 3/5] Cleaning previous builds..."
+echo "[Step 4/5] Cleaning previous builds..."
 rm -rf $BUILD_DIR $DIST_DIR *.spec
 echo "[Info] Old build artifacts removed."
 
 echo ""
-echo "[Step 4/5] Building executable..."
+echo "[Step 5/5] Building executable..."
 $PYINSTALLER_CMD \
     --onefile \
     --name $OUTPUT_NAME \
@@ -87,16 +137,24 @@ $PYINSTALLER_CMD \
 
 echo ""
 # Check if build was successful
-if [ -f "$DIST_DIR/$OUTPUT_NAME" ]; then
+EXE_EXT=""
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+    EXE_EXT=".exe"
+fi
+
+if [ -f "$DIST_DIR/$OUTPUT_NAME$EXE_EXT" ]; then
     echo "[Result] Build completed successfully."
-    echo "Executable created: $DIST_DIR/$OUTPUT_NAME"
+    echo "Executable created: $DIST_DIR/$OUTPUT_NAME$EXE_EXT"
     echo ""
     echo "Usage examples:"
-    echo "  ./$DIST_DIR/$OUTPUT_NAME \"hello world\""
-    echo "  ./$DIST_DIR/$OUTPUT_NAME \"hello world\" -o output_folder"
+    echo "  ./$DIST_DIR/$OUTPUT_NAME$EXE_EXT \"hello world\""
+    echo "  ./$DIST_DIR/$OUTPUT_NAME$EXE_EXT \"hello world\" -o output_folder"
+    echo "  ./$DIST_DIR/$OUTPUT_NAME$EXE_EXT                (for interactive mode)"
     echo ""
-    echo "To install globally (Linux/macOS):"
-    echo "  sudo cp $DIST_DIR/$OUTPUT_NAME /usr/local/bin/"
+    if [[ "$OSTYPE" != "msys" && "$OSTYPE" != "cygwin" && "$OSTYPE" != "win32" ]]; then
+        echo "To install globally (Linux/macOS):"
+        echo "  sudo cp $DIST_DIR/$OUTPUT_NAME /usr/local/bin/"
+    fi
 else
     echo "[Result] Build failed."
     echo "Please check error messages above."
